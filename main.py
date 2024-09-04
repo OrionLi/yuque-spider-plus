@@ -1,16 +1,16 @@
-import sys
-import requests
-import json
-import re
-import os
-import urllib.parse
-import time
-import random
 import argparse
+import json
+import os
+import re
+import time
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 from urllib3 import Retry
-from bs4 import BeautifulSoup
 
 
 def fetch_url_title(url, cookies=None):
@@ -88,6 +88,7 @@ def save_page(book_id, slug, path, cookies=None):
 
         with open(path, 'w', encoding='utf-8') as f:
             f.write(markdown_content)
+        print(f"文档 {slug} 下载成功，保存路径: {path}")
     except requests.exceptions.RequestException as e:
         print(f"请求失败: {e}")
 
@@ -116,7 +117,7 @@ def get_book(url, cookies=None, output_path="download"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    for doc in tqdm(docsjson['book']['toc'], desc="Downloading Documents", unit="doc"):
+    def process_doc(doc):
         if doc['type'] == 'TITLE' or doc['child_uuid'] != '':
             list[doc['uuid']] = {'0': doc['title'], '1': doc['parent_uuid']}
             uuid = doc['uuid']
@@ -135,30 +136,40 @@ def get_book(url, cookies=None, output_path="download"):
             if not os.path.exists(doc_dir):
                 os.makedirs(doc_dir)
             if temp[doc['uuid']].endswith("/"):
-                md += "## " + temp[doc['uuid']][:-1] + "\n"
+                md.append("## " + temp[doc['uuid']][:-1] + "\n")
             else:
-                md += "  " * (temp[doc['uuid']].count("/") - 1) + "* " + temp[doc['uuid']][
-                                                                         temp[doc['uuid']].rfind("/") + 1:] + "\n"
+                md.append("  " * (temp[doc['uuid']].count("/") - 1) + "* " + temp[doc['uuid']][
+                                                                             temp[doc['uuid']].rfind("/") + 1:] + "\n")
         if doc['url'] != '':
             if doc['parent_uuid'] != "":
                 if temp[doc['parent_uuid']].endswith("/"):
-                    md += " " * temp[doc['parent_uuid']].count("/") + "* [" + doc['title'] + "](" + urllib.parse.quote(
-                        temp[doc['parent_uuid']] + "/" + doc['title'].translate(table) + '.md') + ")" + "\n"
+                    md.append(
+                        " " * temp[doc['parent_uuid']].count("/") + "* [" + doc['title'] + "](" + urllib.parse.quote(
+                            temp[doc['parent_uuid']] + "/" + doc['title'].translate(table) + '.md') + ")" + "\n")
                 else:
-                    md += "  " * temp[doc['parent_uuid']].count("/") + "* [" + doc['title'] + "](" + urllib.parse.quote(
-                        temp[doc['parent_uuid']] + "/" + doc['title'].translate(table) + '.md') + ")" + "\n"
+                    md.append(
+                        "  " * temp[doc['parent_uuid']].count("/") + "* [" + doc['title'] + "](" + urllib.parse.quote(
+                            temp[doc['parent_uuid']] + "/" + doc['title'].translate(table) + '.md') + ")" + "\n")
                 save_page(str(docsjson['book']['id']), doc['url'],
                           os.path.join(output_dir, temp[doc['parent_uuid']], doc['title'].translate(table) + '.md'),
                           cookies)
             else:
-                md += " " + "* [" + doc['title'] + "](" + urllib.parse.quote(
-                    doc['title'].translate(table) + '.md') + ")" + "\n"
+                md.append(" " + "* [" + doc['title'] + "](" + urllib.parse.quote(
+                    doc['title'].translate(table) + '.md') + ")" + "\n")
                 save_page(str(docsjson['book']['id']), doc['url'],
                           os.path.join(output_dir, doc['title'].translate(table) + '.md'), cookies)
-            time.sleep(random.randint(1, 4))
+
+    md = []
+    total_docs = len(docsjson['book']['toc'])
+    with tqdm(total=total_docs, desc="下载进度", unit="文档") as pbar:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(process_doc, doc) for doc in docsjson['book']['toc']]
+            for future in as_completed(futures):
+                future.result()
+                pbar.update(1)
 
     with open(os.path.join(output_dir, 'SUMMARY.md'), 'w', encoding='utf-8') as f:
-        f.write(md)
+        f.write(''.join(md))
 
 
 if __name__ == '__main__':
@@ -167,10 +178,10 @@ if __name__ == '__main__':
     parser.add_argument('--cookie', default=None, help='用于认证的 Cookie。')
     parser.add_argument('--output', default="download", help='下载文件的输出目录。')
 
-    if len(sys.argv) == 1:
-        parser.print_help(sys.stderr)
-        sys.exit(1)
-
+    # 交互式参数输入提示
     args = parser.parse_args()
+    url = input("请输入书籍的URL(默认为https://www.yuque.com/burpheart/phpaudit): ") or args.url
+    cookie = input("请输入Cookie(留空则无Cookie): ") or args.cookie
+    output = input("请输入输出目录(默认为download): ") or args.output
 
-    get_book(args.url, args.cookie, args.output)
+    get_book(url, cookie, output)
